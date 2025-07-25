@@ -4,7 +4,11 @@ use tfhe::shortint::prelude::*;
 
 use crate::data;
 use crate::enc_struct::EncStruct;
-use crate::util;
+use crate::util::{
+    self, apply_lookup_table_packed, unchecked_add_packed, unchecked_add_packed_assign,
+    unchecked_scalar_add_packed, unchecked_scalar_add_packed_assign, unchecked_scalar_mul_packed,
+    unchecked_scalar_mul_packed_assign, unchecked_sub_packed,
+};
 
 use pad::PadStr;
 use std::collections::HashMap;
@@ -73,25 +77,27 @@ impl App {
     }
 
     pub fn delete_char(&mut self) {
-        let is_not_cursor_leftmost = self.character_index != 0;
-        if is_not_cursor_leftmost {
-            // Method "remove" is not used on the saved text for deleting the selected char.
-            // Reason: Using remove on String works on bytes instead of the chars.
-            // Using remove would require special care because of char boundaries.
-
-            let current_index = self.character_index;
-            let from_left_to_current_index = current_index - 1;
-
-            // Getting all characters before the selected character.
-            let before_char_to_delete = self.input.chars().take(from_left_to_current_index);
-            // Getting all characters after selected character.
-            let after_char_to_delete = self.input.chars().skip(current_index);
-
-            // Put all characters together except the selected one.
-            // By leaving the selected one out, it is forgotten and therefore deleted.
-            self.input = before_char_to_delete.chain(after_char_to_delete).collect();
-            self.move_cursor_left();
+        let current_index = self.character_index;
+        let is_cursor_leftmost = current_index == 0;
+        if is_cursor_leftmost {
+            return;
         }
+
+        // Method "remove" is not used on the saved text for deleting the selected char.
+        // Reason: Using remove on String works on bytes instead of the chars.
+        // Using remove would require special care because of char boundaries.
+
+        let from_left_to_current_index = current_index - 1;
+
+        // Getting all characters before the selected character.
+        let before_char_to_delete = self.input.chars().take(from_left_to_current_index);
+        // Getting all characters after selected character.
+        let after_char_to_delete = self.input.chars().skip(current_index);
+
+        // Put all characters together except the selected one.
+        // By leaving the selected one out, it is forgotten and therefore deleted.
+        self.input = before_char_to_delete.chain(after_char_to_delete).collect();
+        self.move_cursor_left();
     }
 
     pub fn clamp_cursor(&self, new_cursor_pos: usize) -> usize {
@@ -114,14 +120,13 @@ impl App {
             db_len.insert(i, data::NAME_LIST[i].len());
         }
 
-        let db_max_size = *db_len.values().into_iter().max().unwrap();
+        let db_max_size = *db_len.values().max().unwrap();
 
         // Max factor is defined as the size of the D matrix! (db_max_size + 1)
         let mut max_factor = std::cmp::max(db_max_size, qlen - 1);
         max_factor += 1;
 
         let th = ((max_factor as f64) / 2.0).ceil() as usize;
-        // let th = 8;
 
         let query_padded = enc_struct.query.pad_to_width(max_factor - 1);
 
@@ -129,7 +134,7 @@ impl App {
 
         let q_enc = query_padded
             .bytes() // convert char to int
-            .map(|c| enc_struct.cks.encrypt((c - scale_factor) as u64)) // Encrypts
+            .map(|c| enc_struct.cks.encrypt((c - scale_factor) as u64))
             .collect::<Vec<tfhe::shortint::Ciphertext>>();
 
         let q2_enc = query_padded
@@ -238,7 +243,6 @@ impl App {
     }
 
     pub fn process_plain_query_enc_db(&mut self, enc_struct: &mut EncStruct) {
-
         // Get the min and max lenght of the db strings
         let qlen = enc_struct.query.len() + 1;
 
@@ -249,15 +253,13 @@ impl App {
             db_len.insert(i, data::NAME_LIST[i].len());
         }
 
-        let _db_min_size = *db_len.values().into_iter().min().unwrap();
-        let db_max_size = *db_len.values().into_iter().max().unwrap();
+        let db_max_size = db_len.values().max().unwrap();
 
         // Max factor is defined as the size of the D matrix! (db_max_size + 1)
-        let mut max_factor = std::cmp::max(db_max_size, qlen - 1);
+        let mut max_factor = std::cmp::max(*db_max_size, qlen - 1);
         max_factor += 1;
 
-        let _th = ((max_factor as f64) / 2.0).ceil() as usize;
-        let th: usize = 8;
+        let th: usize = ((max_factor as f64) / 2.0).ceil() as usize;
 
         let zero_enc = enc_struct.cks.encrypt(0u64);
 
@@ -277,7 +279,7 @@ impl App {
                     vec.push(zero_enc.clone());
                 }
                 h_matrix.push(vec.clone());
-                v_matrix.push(vec.clone());
+                v_matrix.push(vec);
             }
 
             for i in 0..max_factor {
@@ -311,133 +313,133 @@ impl App {
     }
 
     pub fn process_part_i(&mut self, index: usize, enc_struct: &mut EncStruct, fpga_enable: bool) {
-        let i: usize = index;
-
         let q1_vec: Vec<tfhe::shortint::prelude::Ciphertext> =
-            vec![enc_struct.q_enc[i - 1].clone(); enc_struct.db_size];
+            vec![enc_struct.q_enc[index - 1].clone(); enc_struct.db_size];
         let q2_vec: Vec<tfhe::shortint::prelude::Ciphertext> =
-            vec![enc_struct.q2_enc[i - 1].clone(); enc_struct.db_size];
+            vec![enc_struct.q2_enc[index - 1].clone(); enc_struct.db_size];
 
         let one_enc_vec_ref: Vec<&Ciphertext> = enc_struct.one_enc_vec.iter().collect();
 
         for j in 1..enc_struct.max_factor {
-            if usize::abs_diff(i, j) <= enc_struct.th {
+            if usize::abs_diff(index, j) <= enc_struct.th {
                 // Check the first part of the character
-                let mut eq1 = enc_struct.sks.unchecked_sub_packed(
+                let mut eq1 = unchecked_sub_packed(
+                    &enc_struct.sks,
                     q1_vec.iter().collect(),
                     util::get_column(&enc_struct.db_enc_matrix, j - 1)
                         .iter()
                         .collect(),
                 );
 
-                enc_struct
-                    .sks
-                    .unchecked_scalar_add_packed_assign(&mut eq1, 16);
+                unchecked_scalar_add_packed_assign(&enc_struct.sks, &mut eq1, 16);
 
                 let mut eq1_lut = Vec::new();
 
-                if !fpga_enable {
-                    let ct = enc_struct.sks.apply_lookup_table_packed_parallellized(
+                if fpga_enable {
+                    eq1_lut = eq1.clone();
+                    enc_struct
+                        .fpga_key
+                        .fpga_utils
+                        .keyswitch_bootstrap_packed(&mut eq1_lut, &enc_struct.lut_1eq_vec_fpga);
+                } else {
+                    let ct = apply_lookup_table_packed(
+                        &enc_struct.sks,
                         eq1.iter().collect(),
                         &enc_struct.lut_1eq_vec_sw,
                     );
                     eq1_lut.extend(ct);
-                } else {
-                    eq1_lut = eq1.clone();
-                    enc_struct
-                        .fpga_key.fpga_utils
-                        .keyswitch_bootstrap_packed(&mut eq1_lut, &enc_struct.lut_1eq_vec_fpga);
                 }
 
                 let eq1_ref: Vec<&Ciphertext> = eq1_lut.iter().collect();
 
-                eq1 = enc_struct
-                    .sks
-                    .unchecked_sub_packed(one_enc_vec_ref.clone(), eq1_ref);
-                enc_struct
-                    .sks
-                    .unchecked_scalar_add_packed_assign(&mut eq1, 16);
+                eq1 = unchecked_sub_packed(&enc_struct.sks, one_enc_vec_ref.clone(), eq1_ref);
 
-                let mut eq2 = enc_struct.sks.unchecked_sub_packed(
+                unchecked_scalar_add_packed_assign(&enc_struct.sks, &mut eq1, 16);
+
+                let mut eq2 = unchecked_sub_packed(
+                    &enc_struct.sks,
                     q2_vec.iter().collect(),
                     util::get_column(&enc_struct.db1_enc_matrix, j - 1)
                         .iter()
                         .collect(),
                 );
 
-                enc_struct
-                    .sks
-                    .unchecked_scalar_mul_packed_assign(&mut eq2, 2);
-                enc_struct
-                    .sks
-                    .unchecked_add_packed_assign(&mut eq2, eq1.iter().collect());
+                unchecked_scalar_mul_packed_assign(&enc_struct.sks, &mut eq2, 2);
+
+                unchecked_add_packed_assign(&enc_struct.sks, &mut eq2, eq1.iter().collect());
 
                 let mut eq2_lut = Vec::new();
 
-                if !fpga_enable {
-                    let ct = enc_struct.sks.apply_lookup_table_packed_parallellized(
+                if fpga_enable {
+                    eq2_lut = eq2.clone();
+                    enc_struct.fpga_key.apply_lookup_vector_packed_assign(
+                        &mut eq2_lut,
+                        &enc_struct.lut_eq_vec_fpga,
+                    );
+                } else {
+                    let ct = apply_lookup_table_packed(
+                        &enc_struct.sks,
                         eq2.iter().collect(),
                         &enc_struct.lut_eq_vec_sw,
                     );
                     eq2_lut.extend(ct);
-                } else {
-                    eq2_lut = eq2.clone();
-                    enc_struct
-                        .fpga_key.apply_lookup_vector_packed_assign(&mut eq2_lut, &enc_struct.lut_eq_vec_fpga);
                 }
 
-                let vin = util::extract_number_elements(&enc_struct.v_matrices, i, j - 1);
-                let hin = util::extract_number_elements(&enc_struct.h_matrices, i - 1, j);
+                let vin = util::extract_number_elements(&enc_struct.v_matrices, index, j - 1);
+                let hin = util::extract_number_elements(&enc_struct.h_matrices, index - 1, j);
 
-                let v1 = enc_struct
-                    .sks
-                    .unchecked_scalar_add_packed(vin.iter().collect(), 1);
-                let h1 = enc_struct
-                    .sks
-                    .unchecked_scalar_add_packed(hin.iter().collect(), 1);
+                let v1 = unchecked_scalar_add_packed(&enc_struct.sks, vin.iter().collect(), 1);
+                let h1 = unchecked_scalar_add_packed(&enc_struct.sks, hin.iter().collect(), 1);
 
-                let key1 = enc_struct
-                    .sks
-                    .unchecked_scalar_mul_packed(h1.iter().collect(), 3);
-                let key12 = enc_struct
-                    .sks
-                    .unchecked_add_packed(key1.iter().collect(), eq2_lut.iter().collect());
+                let key1 = unchecked_scalar_mul_packed(&enc_struct.sks, h1.iter().collect(), 3);
 
-                let key = enc_struct
-                    .sks
-                    .unchecked_add_packed(key12.iter().collect(), v1.iter().collect());
+                let key12 = unchecked_add_packed(
+                    &enc_struct.sks,
+                    key1.iter().collect(),
+                    eq2_lut.iter().collect(),
+                );
+
+                let key = unchecked_add_packed(
+                    &enc_struct.sks,
+                    key12.iter().collect(),
+                    v1.iter().collect(),
+                );
 
                 let mut ct_res = Vec::new();
 
-                if !fpga_enable {
-                    let ct = enc_struct.sks.apply_lookup_table_packed_parallellized(
+                if fpga_enable {
+                    ct_res = key.clone();
+                    enc_struct
+                        .fpga_key
+                        .fpga_utils
+                        .keyswitch_bootstrap_packed(&mut ct_res, &enc_struct.lut_min_vec_fpga);
+                } else {
+                    let ct = apply_lookup_table_packed(
+                        &enc_struct.sks,
                         key.iter().collect(),
                         &enc_struct.lut_min_vec_sw,
                     );
                     ct_res.extend(ct);
-                } else {
-                    ct_res = key.clone();
-                    enc_struct
-                        .fpga_key.fpga_utils
-                        .keyswitch_bootstrap_packed(&mut ct_res, &enc_struct.lut_min_vec_fpga);
                 }
 
-                enc_struct
-                    .sks
-                    .unchecked_scalar_add_packed_assign(&mut ct_res, 16);
+                unchecked_scalar_add_packed_assign(&enc_struct.sks, &mut ct_res, 16);
 
-                let v_res = enc_struct
-                    .sks
-                    .unchecked_sub_packed(ct_res.iter().collect(), hin.iter().collect());
-                let h_res = enc_struct
-                    .sks
-                    .unchecked_sub_packed(ct_res.iter().collect(), vin.iter().collect());
+                let v_res = unchecked_sub_packed(
+                    &enc_struct.sks,
+                    ct_res.iter().collect(),
+                    hin.iter().collect(),
+                );
+                let h_res = unchecked_sub_packed(
+                    &enc_struct.sks,
+                    ct_res.iter().collect(),
+                    vin.iter().collect(),
+                );
 
-                util::write_number_elements(&mut enc_struct.v_matrices, &v_res, i, j);
-                util::write_number_elements(&mut enc_struct.h_matrices, &h_res, i, j);
+                util::write_number_elements(&mut enc_struct.v_matrices, &v_res, index, j);
+                util::write_number_elements(&mut enc_struct.h_matrices, &h_res, index, j);
             }
         }
-        self.progress_done.push(i as u8);
+        self.progress_done.push(index as u8);
     }
 
     pub fn process_plain_part_i(
@@ -446,72 +448,73 @@ impl App {
         enc_struct: &mut EncStruct,
         fpga_enable: bool,
     ) {
-        let i = index;
         let query_padded = enc_struct.query.pad_to_width(enc_struct.max_factor - 1);
 
         for j in 1..enc_struct.max_factor {
-            if usize::abs_diff(i, j) <= enc_struct.th {
+            if usize::abs_diff(index, j) <= enc_struct.th {
                 let eq: Vec<Ciphertext> = util::get_db_enc_vec(
-                    query_padded.chars().nth(i - 1).unwrap(),
+                    query_padded.chars().nth(index - 1).unwrap(),
                     j - 1,
                     &enc_struct.db_enc_map,
                 );
 
-                let vin = util::extract_number_elements(&enc_struct.v_matrices, i, j - 1);
-                let hin = util::extract_number_elements(&enc_struct.h_matrices, i - 1, j);
+                let vin = util::extract_number_elements(&enc_struct.v_matrices, index, j - 1);
+                let hin = util::extract_number_elements(&enc_struct.h_matrices, index - 1, j);
 
-                let v1 = enc_struct
-                    .sks
-                    .unchecked_scalar_add_packed(vin.iter().collect(), 1);
-                let h1 = enc_struct
-                    .sks
-                    .unchecked_scalar_add_packed(hin.iter().collect(), 1);
+                let v1 = unchecked_scalar_add_packed(&enc_struct.sks, vin.iter().collect(), 1);
+                let h1 = unchecked_scalar_add_packed(&enc_struct.sks, hin.iter().collect(), 1);
 
-                let key1 = enc_struct
-                    .sks
-                    .unchecked_scalar_mul_packed(h1.iter().collect(), 3);
-                let key12 = enc_struct
-                    .sks
-                    .unchecked_add_packed(key1.iter().collect(), eq.iter().collect());
+                let key1 = unchecked_scalar_mul_packed(&enc_struct.sks, h1.iter().collect(), 3);
 
-                let key = enc_struct
-                    .sks
-                    .unchecked_add_packed(key12.iter().collect(), v1.iter().collect());
+                let key12 = unchecked_add_packed(
+                    &enc_struct.sks,
+                    key1.iter().collect(),
+                    eq.iter().collect(),
+                );
 
-                let mut ct_res: Vec<Ciphertext> = Vec::new();
-                if !fpga_enable {
-                    ct_res = enc_struct.sks.apply_lookup_table_packed_parallellized(
+                let key = unchecked_add_packed(
+                    &enc_struct.sks,
+                    key12.iter().collect(),
+                    v1.iter().collect(),
+                );
+
+                let mut ct_res: Vec<Ciphertext>;
+                if fpga_enable {
+                    ct_res = key.clone();
+                    enc_struct
+                        .fpga_key
+                        .fpga_utils
+                        .keyswitch_bootstrap_packed(&mut ct_res, &enc_struct.lut_min_vec_fpga);
+                } else {
+                    ct_res = apply_lookup_table_packed(
+                        &enc_struct.sks,
                         key.iter().collect(),
                         &enc_struct.lut_min_vec_sw,
                     );
-                } else {
-                    ct_res = key.clone();
-                    enc_struct
-                        .fpga_key.fpga_utils
-                        .keyswitch_bootstrap_packed(&mut ct_res, &enc_struct.lut_min_vec_fpga);
                 }
 
-                enc_struct
-                    .sks
-                    .unchecked_scalar_add_packed_assign(&mut ct_res, 16);
+                unchecked_scalar_add_packed_assign(&enc_struct.sks, &mut ct_res, 16);
 
-                let v_res = enc_struct
-                    .sks
-                    .unchecked_sub_packed(ct_res.iter().collect(), hin.iter().collect());
-                let h_res = enc_struct
-                    .sks
-                    .unchecked_sub_packed(ct_res.iter().collect(), vin.iter().collect());
+                let v_res = unchecked_sub_packed(
+                    &enc_struct.sks,
+                    ct_res.iter().collect(),
+                    hin.iter().collect(),
+                );
+                let h_res = unchecked_sub_packed(
+                    &enc_struct.sks,
+                    ct_res.iter().collect(),
+                    vin.iter().collect(),
+                );
 
-                util::write_number_elements(&mut enc_struct.v_matrices, &v_res, i, j);
-                util::write_number_elements(&mut enc_struct.h_matrices, &h_res, i, j);
+                util::write_number_elements(&mut enc_struct.v_matrices, &v_res, index, j);
+                util::write_number_elements(&mut enc_struct.h_matrices, &h_res, index, j);
             }
         }
-        self.progress_done.push(i as u8);
+        self.progress_done.push(index as u8);
     }
 
     pub fn post_process(&mut self, enc_struct: &mut EncStruct, fpga_enable: bool) {
-        // Berekning van alle rest van de matrix
-
+        // Computation of the rest of the matrix
         let mut h_dec_matrices: Vec<Vec<Vec<i64>>> = Vec::with_capacity(enc_struct.db_size);
         let mut v_dec_matrices: Vec<Vec<Vec<i64>>> = Vec::with_capacity(enc_struct.db_size);
 
@@ -571,29 +574,19 @@ impl App {
         let mut matched_name = "None".to_string();
 
         let time_string = format!("{:.5}", sec);
-        let mut comment = String::new();
 
-        if fpga_enable & enc_struct.input.starts_with("p:") {
-            comment = "plaintext query and FPGA Acceleration".to_owned();
+        let comment = if fpga_enable & enc_struct.input.starts_with("p:") {
+            "plaintext query and FPGA Acceleration".to_owned()
         } else if fpga_enable {
-            comment = "FPGA Acceleration".to_owned();
+            "FPGA Acceleration".to_owned()
         } else if enc_struct.input.starts_with("p:") {
-            comment = "plaintext query".to_owned();
+            "plaintext query".to_owned()
         } else {
-            comment = "Normal execution".to_owned();
-        }
+            "Normal execution".to_owned()
+        };
 
         for i in 0..enc_struct.db_size {
             let enc_score = result_map.get(&i).unwrap();
-
-            // Debug stmt
-            // let string_debug = format!(
-            //     "DB: {}[{}] - Score: {}",
-            //     data::NAME_LIST[i], data::NAME_LIST[i].len(), enc_score
-            // );
-
-            // self.messages
-            // .push((string_debug.to_string(), " ".to_owned(), " ".to_owned(), " ".to_owned()));
 
             let diff = i64::abs_diff(
                 data::NAME_LIST[i].len().try_into().unwrap(),

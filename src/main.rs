@@ -1,10 +1,3 @@
-// Created by: Wouter Legiest
-
-// #![allow(unused_assignments)]
-// #![allow(unused_mut)]
-// #![allow(unused_variables)]
-// #![allow(unused_imports)]
-
 use enc_struct::EncStruct;
 
 use ratatui::prelude::*;
@@ -63,7 +56,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<()> {
-    let params: ClassicPBSParameters = tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2;
+    // security = 132 bits, p-fail = 2^-71.625
+    let mut v0_11_param_message_leuvenshtein =
+        tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS.clone();
+    v0_11_param_message_leuvenshtein.message_modulus = MessageModulus(16);
+    v0_11_param_message_leuvenshtein.carry_modulus = CarryModulus(1);
+
+    let params: ClassicPBSParameters = v0_11_param_message_leuvenshtein;
     let cks: ClientKey = ClientKey::new(params);
     let sks: ServerKey = ServerKey::new(&cks);
     let integer_server_key: IntegerServerKey =
@@ -94,7 +93,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<(
         let mut peq_plain = HashMap::new();
 
         for i in &ascii_collection {
-            let s = *i as u8 as char;
+            let s = *i as char;
             let mut bitvec = vec![0u8; m];
 
             for j in 0..m {
@@ -118,7 +117,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<(
     let mut enc_struct = EncStruct {
         input: String::new(),
         query: String::new(),
-        max_factor: max_factor,
+        max_factor,
         db_size: data::NAME_LIST.len(),
         th: 0,
         time: Instant::now(),
@@ -127,8 +126,8 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<(
         db_enc_matrix: Vec::new(),
         db1_enc_matrix: Vec::new(),
         db_enc_map: db_processed,
-        sks: sks,
-        cks: cks,
+        sks,
+        cks,
         fpga_key: &mut fpga_key,
         one_enc_vec: Vec::new(),
         v_matrices: Vec::new(),
@@ -150,7 +149,6 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<(
         terminal.draw(|f| ui(f, &app, &enc_struct))?;
 
         if matches!(app.input_mode, InputMode::Process) {
-            //check if string start with p:
             if enc_struct.input.starts_with("p:") {
                 if app.progress_done.len() == 0 {
                     app.process_plain_query_enc_db(&mut enc_struct);
@@ -293,7 +291,7 @@ fn ui(f: &mut Frame, app: &App, enc_struct: &EncStruct) {
         Constraint::Length(1),
         Constraint::Min(1),
     ]);
-    let [help_area, input_area, progress_area, messages_area] = vertical.areas(f.size());
+    let [help_area, input_area, progress_area, messages_area] = vertical.areas(f.area());
 
     let (msg, style) = match app.input_mode {
         InputMode::Normal => (
@@ -362,13 +360,13 @@ fn ui(f: &mut Frame, app: &App, enc_struct: &EncStruct) {
             // Make the cursor visible and ask ratatui to put it at the specified coordinates after
             // rendering
             #[allow(clippy::cast_possible_truncation)]
-            f.set_cursor(
+            f.set_cursor_position(Position::new(
                 // Draw the cursor at the current position in the input field.
                 // This position is can be controlled via the left and right arrow key
                 input_area.x + app.character_index as u16 + 1,
                 // Move one line down, from the border to the input line
                 input_area.y + 1,
-            );
+            ));
         }
         InputMode::Process => {
             // Hide the cursor. `Frame` does this by default, so we don't need to do anything here
@@ -377,12 +375,14 @@ fn ui(f: &mut Frame, app: &App, enc_struct: &EncStruct) {
             // Make the cursor visible and ask ratatui to put it at the specified coordinates after
             // rendering
             #[allow(clippy::cast_possible_truncation)]
-            f.set_cursor(
+            f.set_cursor_position(
                 // Draw the cursor at the current position in the input field.
                 // This position is can be controlled via the left and right arrow key
-                input_area.x + app.character_index as u16 + 1,
-                // Move one line down, from the border to the input line
-                input_area.y + 1,
+                Position::new(
+                    input_area.x + app.character_index as u16 + 1,
+                    // Move one line down, from the border to the input line
+                    input_area.y + 1,
+                ),
             );
         }
         InputMode::FProcess => {
