@@ -1,4 +1,4 @@
-use enc_struct::EncStruct;
+use crate::enc_struct::EncStruct;
 
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Gauge, List, ListItem, Paragraph};
@@ -17,6 +17,7 @@ mod util;
 use crate::app::App;
 use crate::app::InputMode;
 
+#[cfg(feature = "fpga")]
 use tfhe::integer::fpga::BelfortServerKey;
 
 use tfhe::integer::ServerKey as IntegerServerKey;
@@ -56,6 +57,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<()> {
+    // Do a popup
+
+    terminal.draw(|frame| app.draw(frame))?;
+
     // security = 132 bits, p-fail = 2^-71.625
     let mut v0_11_param_message_leuvenshtein =
         tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS.clone();
@@ -67,6 +72,8 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<(
     let sks: ServerKey = ServerKey::new(&cks);
     let integer_server_key: IntegerServerKey =
         tfhe::integer::ServerKey::new_radix_server_key_from_shortint(sks.clone());
+
+    #[cfg(feature = "fpga")]
     let mut fpga_key = BelfortServerKey::from(&integer_server_key);
 
     let db_size = data::NAME_LIST.len();
@@ -128,6 +135,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<(
         db_enc_map: db_processed,
         sks,
         cks,
+        #[cfg(feature = "fpga")]
         fpga_key: &mut fpga_key,
         one_enc_vec: Vec::new(),
         v_matrices: Vec::new(),
@@ -144,6 +152,8 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<(
     {
         enc_struct.fpga_key.connect();
     }
+
+    app.show_popup = false;
 
     loop {
         terminal.draw(|f| ui(f, &app, &enc_struct))?;

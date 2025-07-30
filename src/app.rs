@@ -1,3 +1,5 @@
+use ratatui::layout::Flex;
+use ratatui::widgets::Borders;
 use tfhe::core_crypto::fpga::keyswitch_bootstrap::KeyswitchBootstrapPacked;
 use tfhe::core_crypto::fpga::lookup_vector::LookupVector;
 use tfhe::shortint::prelude::*;
@@ -13,6 +15,16 @@ use crate::util::{
 use pad::PadStr;
 use std::collections::HashMap;
 use std::time::Instant;
+
+use ratatui::{
+    crossterm::event::{self, Event, KeyCode, KeyEventKind},
+    layout::{Alignment, Constraint, Direction, Layout, Rect}, // Added Direction to imports
+    style::{Color, Style, Stylize},
+    text::{Line, Span, Text},
+    widgets::{Block, BorderType, Clear, Paragraph, Wrap},
+    DefaultTerminal,
+    Frame,
+};
 
 #[derive(Clone)]
 pub enum InputMode {
@@ -35,6 +47,8 @@ pub struct App {
     /// History of recorded messages
     pub messages: Vec<(String, String, String, String)>,
     pub progress_done: Vec<u8>,
+
+    pub show_popup: bool,
 }
 
 impl App {
@@ -45,6 +59,7 @@ impl App {
             messages: Vec::new(),
             character_index: 0,
             progress_done: Vec::new(),
+            show_popup: true,
         }
     }
 
@@ -337,6 +352,7 @@ impl App {
 
                 if fpga_enable {
                     eq1_lut = eq1.clone();
+                    #[cfg(feature = "fpga")]
                     enc_struct
                         .fpga_key
                         .fpga_utils
@@ -372,6 +388,7 @@ impl App {
 
                 if fpga_enable {
                     eq2_lut = eq2.clone();
+                    #[cfg(feature = "fpga")]
                     enc_struct.fpga_key.apply_lookup_vector_packed_assign(
                         &mut eq2_lut,
                         &enc_struct.lut_eq_vec_fpga,
@@ -409,6 +426,7 @@ impl App {
 
                 if fpga_enable {
                     ct_res = key.clone();
+                    #[cfg(feature = "fpga")]
                     enc_struct
                         .fpga_key
                         .fpga_utils
@@ -481,6 +499,7 @@ impl App {
                 let mut ct_res: Vec<Ciphertext>;
                 if fpga_enable {
                     ct_res = key.clone();
+                    #[cfg(feature = "fpga")]
                     enc_struct
                         .fpga_key
                         .fpga_utils
@@ -618,5 +637,82 @@ impl App {
         self.progress_done.clear();
         self.input.clear();
         self.reset_cursor();
+    }
+
+    /// helper function to create a centered rect using up certain percentage of the available rect `r`
+    fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
+        let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
+        let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
+        let [area] = vertical.areas(area);
+        let [area] = horizontal.areas(area);
+        area
+    }
+
+    pub fn draw(&self, frame: &mut Frame) {
+        let area = frame.area();
+
+        let vertical = Layout::vertical([Constraint::Percentage(20), Constraint::Percentage(80)]);
+        let [instructions, content] = vertical.areas(area);
+
+        let central_layout = Layout::default()
+            .direction(Direction::Vertical) // Divide vertically first
+            .constraints([
+                Constraint::Percentage(25), // Top 33%
+                Constraint::Percentage(50), // Middle 34% (slightly larger to ensure no gaps with rounding)
+                Constraint::Percentage(25), // Bottom 33%
+            ])
+            .split(area); // Split the 'content' area
+
+        let middle_row = central_layout[1]; // Get the middle horizontal band
+
+        let middle_column_layout = Layout::default()
+            .direction(Direction::Horizontal) // Then divide horizontally within the middle row
+            .constraints([
+                Constraint::Percentage(25), // Left 25%
+                Constraint::Percentage(50), // Middle 50%
+                Constraint::Percentage(25), // Right 25%
+            ])
+            .split(middle_row);
+
+        let middle_block_area = middle_column_layout[1]; // This is the central 34% x 34% area
+
+        let block = Block::bordered().border_type(BorderType::Rounded);
+        // .on_dark_gray();
+        // frame.render_widget(block, content);
+
+        let text = Text::from(vec![
+            Line::from(Span::styled(
+                "Leuvenshtein Database Demo",
+                Style::default().fg(Color::Yellow).bold(),
+            )),
+            Line::from(""), // Empty line for spacing
+            Line::from(vec![Span::styled(
+                "Encrypting and processing the database",
+                Style::default(),
+            )]),
+            Line::from(""),
+            #[cfg(not(feature = "fpga"))]
+            Line::from(vec![Span::styled(
+                "NO FPGA SUPPORT, ADD `fpga` FEATURE",
+                Style::default().fg(Color::Red).bold(),
+            )]),
+            Line::from(""),
+            Line::from("Created by Wouter Legiest, COSIC - KU Leuven"),
+            Line::from(""),
+            Line::from("Accelerated on FPGA by Belfort"),
+        ]);
+
+        let paragraph = Paragraph::new(text)
+            .block(block)
+            .centered()
+            .wrap(Wrap { trim: true });
+        frame.render_widget(paragraph, middle_block_area);
+
+        // if self.show_popup {
+        //     let block = Block::bordered().title("Popup");
+        //     let area = Self::popup_area(area, 40, 2400);
+        //     frame.render_widget(Clear, area); //this clears out the background
+        //     frame.render_widget(block, area);
+        // }
     }
 }
