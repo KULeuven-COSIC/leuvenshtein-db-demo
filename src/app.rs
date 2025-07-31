@@ -1,5 +1,4 @@
-use ratatui::layout::Flex;
-use ratatui::widgets::Borders;
+#[cfg(feature = "fpga")]
 use tfhe::core_crypto::fpga::keyswitch_bootstrap::KeyswitchBootstrapPacked;
 use tfhe::core_crypto::fpga::lookup_vector::LookupVector;
 use tfhe::shortint::prelude::*;
@@ -17,12 +16,10 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use ratatui::{
-    crossterm::event::{self, Event, KeyCode, KeyEventKind},
-    layout::{Alignment, Constraint, Direction, Layout, Rect}, // Added Direction to imports
+    layout::{Constraint, Direction, Layout},
     style::{Color, Style, Stylize},
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, Clear, Paragraph, Wrap},
-    DefaultTerminal,
+    widgets::{Block, BorderType, Paragraph, Wrap},
     Frame,
 };
 
@@ -47,8 +44,6 @@ pub struct App {
     /// History of recorded messages
     pub messages: Vec<(String, String, String, String)>,
     pub progress_done: Vec<u8>,
-
-    pub show_popup: bool,
 }
 
 impl App {
@@ -59,7 +54,6 @@ impl App {
             messages: Vec::new(),
             character_index: 0,
             progress_done: Vec::new(),
-            show_popup: true,
         }
     }
 
@@ -639,20 +633,8 @@ impl App {
         self.reset_cursor();
     }
 
-    /// helper function to create a centered rect using up certain percentage of the available rect `r`
-    fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
-        let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
-        let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
-        let [area] = vertical.areas(area);
-        let [area] = horizontal.areas(area);
-        area
-    }
-
     pub fn draw(&self, frame: &mut Frame) {
         let area = frame.area();
-
-        let vertical = Layout::vertical([Constraint::Percentage(20), Constraint::Percentage(80)]);
-        let [instructions, content] = vertical.areas(area);
 
         let central_layout = Layout::default()
             .direction(Direction::Vertical) // Divide vertically first
@@ -668,17 +650,15 @@ impl App {
         let middle_column_layout = Layout::default()
             .direction(Direction::Horizontal) // Then divide horizontally within the middle row
             .constraints([
-                Constraint::Percentage(25), // Left 25%
-                Constraint::Percentage(50), // Middle 50%
-                Constraint::Percentage(25), // Right 25%
+                Constraint::Percentage(20), // Left 25%
+                Constraint::Percentage(60), // Middle 50%
+                Constraint::Percentage(20), // Right 25%
             ])
             .split(middle_row);
 
-        let middle_block_area = middle_column_layout[1]; // This is the central 34% x 34% area
+        let middle_block_area = middle_column_layout[1];
 
         let block = Block::bordered().border_type(BorderType::Rounded);
-        // .on_dark_gray();
-        // frame.render_widget(block, content);
 
         let text = Text::from(vec![
             Line::from(Span::styled(
@@ -686,6 +666,10 @@ impl App {
                 Style::default().fg(Color::Yellow).bold(),
             )),
             Line::from(""), // Empty line for spacing
+            Line::from(Span::styled(
+                "Preprocessing",
+                Style::default().italic().bold().slow_blink(),
+            )),
             Line::from(vec![Span::styled(
                 "Encrypting and processing the database",
                 Style::default(),
@@ -702,17 +686,20 @@ impl App {
             Line::from("Accelerated on FPGA by Belfort"),
         ]);
 
-        let paragraph = Paragraph::new(text)
+        let text_lines = text.lines.len() as u16;
+        let available_height = middle_block_area.height;
+        let top_padding = (available_height.saturating_sub(text_lines) as f32 * 0.33) as u16;
+
+        let mut padded_lines = Vec::new();
+        for _ in 0..top_padding {
+            padded_lines.push(Line::from(""));
+        }
+        padded_lines.extend(text.lines.clone());
+
+        let paragraph = Paragraph::new(padded_lines)
             .block(block)
             .centered()
             .wrap(Wrap { trim: true });
         frame.render_widget(paragraph, middle_block_area);
-
-        // if self.show_popup {
-        //     let block = Block::bordered().title("Popup");
-        //     let area = Self::popup_area(area, 40, 2400);
-        //     frame.render_widget(Clear, area); //this clears out the background
-        //     frame.render_widget(block, area);
-        // }
     }
 }
